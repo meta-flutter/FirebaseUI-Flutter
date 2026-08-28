@@ -1,0 +1,126 @@
+# The FirebaseUI-Flutter example apps on ivi-homescreen — the app layer.
+#
+#   emb cross ../ivi-homescreen --target rpi5-trixie --build --no-verify \
+#       --backend drm-kms-egl --app packages/firebase_ui_auth/example \
+#       --mode release --deploy joel@raspberrypi.local --run
+#
+# Run it from THIS directory. ivi-homescreen resolves PLUGINS_DIR relative to
+# the process working directory, and the relative path its manifest uses
+# (../ivi-homescreen-plugins/plugins) is correct from any repo checked out
+# beside the embedder -- including this one. From elsewhere the path silently
+# misses and the embedder builds with no plugins at all.
+#
+# --no-verify because this app layer adds sysroot packages the embedder project
+# did not resolve with, which reads as emb.lock drift against the project's
+# lock. The alternative, --update-lock, rewrites ivi-homescreen's lock with
+# inputs that belong to this app.
+#
+# `emb cross <project> --app <dir>` builds the embedder from the ivi-homescreen
+# project and one Flutter app from <dir>. The project owns the board profile
+# every app on that board shares; this file states what the FirebaseUI examples
+# need on top of it.
+#
+# ONE manifest covers all six examples. They differ only in Dart code — the
+# native side is identical: the Firebase plugins, and the Firebase C++ SDK they
+# link against. So each example directory carries a `.emb` symlink back to this
+# directory rather than a manifest of its own, and there is a single place to
+# change when the SDK version or the plugin set moves.
+#
+# base.emb.yaml is the shared layer of an `.emb/` directory: emb merges it into
+# every board file beside it, and it is also the block the native build reads
+# (`local`/`host` are reserved names, so no manifest can declare them as
+# targets). Everything here therefore applies to both the Pi cross builds in
+# raspberry-pi.emb.yaml and to `--target local` on the development host.
+id: firebase-ui-flutter
+type: app
+supported_archs: [arm64, x86_64]
+supported_host_types: [fedora, ubuntu]
+
+# Host packages the augment below needs to build the SDK on this machine (it
+# compiles the same sources for the host and for the board). `emb deps
+# --packages .` installs them.
+deps:
+  linux:
+    fedora: [cmake, ninja-build, golang, python3, perl, pkg-config]
+    ubuntu: [cmake, ninja-build, golang, python3, perl, pkg-config]
+
+cross:
+  defines:
+    # ivi-homescreen's own base builds with plugins off. These apps are nothing
+    # without them, and the plugin sources live in the repo checked out beside
+    # the embedder (PLUGINS_DIR is relative to the embedder's CMake source).
+    DISABLE_PLUGINS: 'OFF'
+    PLUGINS_DIR: '../ivi-homescreen-plugins/plugins'
+
+    # The Firebase plugins the examples exercise. plugins/CMakeLists.txt turns
+    # firebase_core on by itself as soon as any one of these is set, and that is
+    # what pulls in cmake/firebase.cmake — the consumer of the augment below.
+    BUILD_PLUGIN_FIREBASE_AUTH: 'ON'
+    BUILD_PLUGIN_FIREBASE_STORAGE: 'ON'
+    BUILD_PLUGIN_CLOUD_FIRESTORE: 'ON'
+
+    # firebase_ui_oauth's Google provider signs in through the platform plugin,
+    # and every provider that opens a consent page needs url_launcher.
+    BUILD_PLUGIN_GOOGLE_SIGN_IN: 'ON'
+    BUILD_PLUGIN_URL_LAUNCHER: 'ON'
+
+  augment:
+    # The Firebase C++ SDK. There is no distro package for it on any target, so
+    # it is built from source against the same profile as the embedder and
+    # staged into the prefix the embedder searches (the private sysroot when
+    # cross-compiling, a workspace overlay when native).
+    #
+    # It is a large build — it fetches and compiles its own boringssl, curl,
+    # zlib, libuv, flatbuffers and, for Firestore, the firebase-ios-sdk core
+    # with gRPC and protobuf. Expect the better part of an hour the first time.
+    # emb skips it on later runs once pkg-config finds the installed
+    # firebase-cpp-sdk.pc at this version, so the cost is paid once per sysroot.
+    #
+    # The patches are carried here rather than upstreamed-and-waited-on; each
+    # one says at its top what it fixes. 0002, 0003 and 0005 are upstream bugs
+    # or gaps rather than local policy, and are worth sending to
+    # firebase/firebase-cpp-sdk.
+    - pkg: firebase-cpp-sdk
+      min: "13.12.0"
+      url: https://github.com/firebase/firebase-cpp-sdk/archive/refs/tags/v13.12.0.tar.gz
+      build: cmake
+      static: true
+      patches:
+        - patches/firebase-cpp-sdk/0001-Disable-unknown-compiler-options.patch
+        - patches/firebase-cpp-sdk/0002-leveldb-do-not-inherit-another-dependency-s-patch-fi.patch
+        - patches/firebase-cpp-sdk/0003-Build-this-SDK-and-its-dependencies-with-a-current-t.patch
+        - patches/firebase-cpp-sdk/0004-Add-install-rules-for-the-desktop-Linux-SDK.patch
+        - patches/firebase-cpp-sdk/0005-Recognize-arm-on-desktop-Linux.patch
+      defines:
+        # 0004: without this the build produces static libraries and installs
+        # nothing, which is fine for firebase's own CI and useless to a consumer.
+        FIREBASE_CPP_INSTALL: 'ON'
+        # Link the SDK's own boringssl rather than the target's OpenSSL, so the
+        # embedder binary carries one TLS stack it was actually tested against.
+        FIREBASE_USE_BORINGSSL: 'ON'
+        # Must match the toolchain's default (and the embedder's) or every
+        # std::string crossing the plugin boundary is a different type.
+        FIREBASE_LINUX_USE_CXX11_ABI: 'ON'
+        FIREBASE_CPP_BUILD_TESTS: 'OFF'
+        FIREBASE_CPP_BUILD_STUB_TESTS: 'OFF'
+        # ivi-homescreen links a PIE executable, and static archives built
+        # without this cannot go into one -- the link fails on
+        # "relocation R_X86_64_32 against .rodata". firebase's external rules
+        # forward this variable to the vendored dependency builds, so setting it
+        # here covers boringssl, curl, gRPC and the rest as well.
+        CMAKE_POSITION_INDEPENDENT_CODE: 'ON'
+
+        # Raise the policy floor for the pinned dependencies that still declare
+        # cmake_minimum_required(VERSION < 3.5), which CMake 4 refuses. 0003
+        # carries this into the nested dependency builds, which do not inherit
+        # it. The compiler-side compatibility flags live in 0003 rather than
+        # here: passing them as -DCMAKE_CXX_FLAGS would replace the cross
+        # toolchain file's own flags and the build would fail to find crt1.o.
+        CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+
+  package:
+    # Runtime libraries the SDK links that the embedder's own DT_NEEDED does not
+    # name. Everything else it needs it links statically.
+    depends:
+      - libsecret-1-0
+      - libuuid1
