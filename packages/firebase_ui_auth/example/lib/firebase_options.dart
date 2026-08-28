@@ -25,16 +25,16 @@ class DefaultFirebaseOptions {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
       case TargetPlatform.windows:
+      // An embedded-Linux embedder (ivi-homescreen) backs its Firebase plugins
+      // with the Firebase C++ SDK, which is the same client the Android options
+      // describe -- an api key, app id and project id, with no store listing
+      // involved. Windows is here for the same reason.
+      case TargetPlatform.linux:
         return android;
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
         return macos;
-      case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
       default:
         throw UnsupportedError(
           'DefaultFirebaseOptions are not supported for this platform.',
