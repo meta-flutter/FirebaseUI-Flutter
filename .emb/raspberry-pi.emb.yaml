@@ -1,0 +1,57 @@
+# The FirebaseUI-Flutter examples on a Raspberry Pi — the board layer of this
+# app. Everything that is true for these apps on any target lives in
+# base.emb.yaml, which emb merges underneath each target here.
+#
+# What a Pi adds is sysroot packages: the Firebase C++ SDK's Linux secure
+# storage links libsecret, and its app identity links libuuid, so both have to
+# be in the sysroot before the augment in base.emb.yaml can build. dev_packages
+# accumulate down the chain, so these add to the ivi-homescreen board stack
+# rather than replacing it.
+#
+#   emb cross ../ivi-homescreen --list-targets
+#   emb cross ../ivi-homescreen --target rpi5-trixie --build \
+#       --backend drm-kms-egl --app packages/firebase_ui_auth/example \
+#       --mode release --deploy joel@raspberrypi.local --run
+#
+# Covers the three trixie boards; joel@raspberrypi.local is a Pi 5 on trixie
+# (Debian 13). The bookworm boards are deliberately absent: they take a
+# different image, so they would need their own snapshot pin, and nothing has
+# been run on one.
+id: firebase-ui-flutter
+type: app
+supported_archs: [arm64]
+supported_host_types: [fedora, ubuntu]
+
+cross:
+  targets:
+    # The three trixie boards differ only in cpu tuning and share one PiOS
+    # image, so one layer serves all of them.
+    rpi5-trixie: &pi_trixie
+      sysroot:
+        # Pin apt resolution to a snapshot taken just after the sysroot image
+        # was built. Debian point releases drop superseded versions from the
+        # pool while the image's own index still names them, so an unpinned
+        # resolve of a wide dependency closure eventually 404s. It also makes
+        # the sysroot reproducible.
+        snapshot: 2026-04-22
+        dev_packages:
+          # firebase-cpp-sdk's Linux secure storage (app/src/secure) stores
+          # refresh tokens in the login keyring through libsecret.
+          - libsecret-1-dev
+          # ...and its installation id uses libuuid. Both are probed with
+          # pkg_check_modules by ivi-homescreen-plugins' cmake/firebase.cmake,
+          # so a miss is a configure error, not a link error.
+          - uuid-dev
+          # Firestore's gRPC and protobuf build against the platform Abseil
+          # rather than the copy Firestore downloads (their release tarballs
+          # ship empty abseil submodule directories, so they fall back to
+          # find_package). trixie's 20240722 is the release Firestore pins, so
+          # this is a match rather than a substitution.
+          - libabsl-dev
+
+    # Cortex-A72.
+    rpi4-trixie: *pi_trixie
+
+    # Cortex-A53. The 2 W is the arm64 Zero; the original Zero is armv6 and no
+    # target here builds for it.
+    rpi-zero-2w-trixie: *pi_trixie
